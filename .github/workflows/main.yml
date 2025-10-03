@@ -1,10 +1,10 @@
 name: Build SpotDL Wheels (full)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}  # Permite disparar manualmente el workflow
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*.*.*'         # Se ejecuta al pushear tags tipo vX.X.X
 
 env:
   # Ajustes generales de cibuildwheel; se usan por plataforma cuando aplica
