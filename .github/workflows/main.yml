@@ -6,11 +6,6 @@ on:
     tags:
       - 'v*.*.*'         # Se ejecuta al pushear tags tipo vX.X.X
 
-env:
-  # Ajustes generales de cibuildwheel; se usan por plataforma cuando aplica
-  CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
-  CIBW_SKIP: "pp*"
-
 jobs:
   prepare:
     name: Prepare repository
@@ -44,12 +39,16 @@ syncedlyrics
 soundcloud-v2
 websockets
 REQ
-          echo "::set-output name=path::requirements.txt"
+          echo "path=requirements.txt" >> $GITHUB_OUTPUT
 
   build-wheels:
     name: Build wheels for ${{ matrix.target }} / py${{ matrix.python-version }}
     runs-on: ubuntu-latest
     needs: prepare
+    env:
+      # Ajustes generales de cibuildwheel; se usan por plataforma cuando aplica
+      CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
+      CIBW_SKIP: "pp*"
     strategy:
       fail-fast: false
       matrix:
@@ -106,8 +105,6 @@ REQ
 
           # Always attempt to build any missing dependency wheels with pip as extra attempt
           pip wheel -r requirements.txt -w wheelhouse || true
-          pip wheel spotdl -w wheelhouse || true
-
       - name: List wheelhouse
         run: ls -lah wheelhouse || true
 
