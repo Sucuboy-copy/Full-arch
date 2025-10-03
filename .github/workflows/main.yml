@@ -1,0 +1,143 @@
+name: Build SpotDL Wheels (full)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  # Ajustes generales de cibuildwheel; se usan por plataforma cuando aplica
+  CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
+  CIBW_SKIP: "pp*"
+
+jobs:
+  prepare:
+    name: Prepare repository
+    runs-on: ubuntu-latest
+    outputs:
+      reqfile: ${{ steps.reqfile.outputs.path }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Crea requirements.txt desde la lista básica que diste
+      - name: Create requirements.txt
+        id: reqfile
+        run: |
+          cat <<'REQ' > requirements.txt
+spotipy
+ytmusicapi
+pytube
+yt-dlp
+mutagen
+rich
+beautifulsoup4
+requests
+rapidfuzz
+python-slugify[unidecode]
+uvicorn
+pydantic
+fastapi
+platformdirs
+pykakasi
+syncedlyrics
+soundcloud-v2
+websockets
+REQ
+          echo "::set-output name=path::requirements.txt"
+
+  build-wheels:
+    name: Build wheels for ${{ matrix.target }} / py${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        # targets cubren manylinux (glibc) y musl (Alpine/iSH) y ARM aarch64
+        target: [manylinux_x86_64, musllinux_x86_64, manylinux_i686, musllinux_i686, manylinux_aarch64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install cibuildwheel==2.16.5 wheel build setuptools-rust maturin
+
+      # Build wheels using cibuildwheel for manylinux/musllinux images when applicable.
+      # For i686 musl builds or tricky combos, cibuildwheel may not support direct image names;
+      # pip wheel is fallback (runs on runner's env and can produce some wheels).
+      - name: Build wheels (cibuildwheel when possible)
+        env:
+          CIBW_MANYLINUX_X86_64_IMAGE: "quay.io/pypa/manylinux2014_x86_64"
+          CIBW_MUSLLINUX_X86_64_IMAGE: "ghcr.io/pypa/musllinux_1_1_x86_64"
+          CIBW_MANYLINUX_AARCH64_IMAGE: "quay.io/pypa/manylinux2014_aarch64"
+          CIBW_ARCHS: auto
+        run: |
+          mkdir -p wheelhouse
+
+          if [[ "${{ matrix.target }}" == "manylinux_x86_64" ]]; then
+            echo "Running cibuildwheel for manylinux x86_64..."
+            CIBW_PLATFORM=linux cibuildwheel --output-dir wheelhouse --arch x86_64
+          elif [[ "${{ matrix.target }}" == "musllinux_x86_64" ]]; then
+            echo "Running cibuildwheel for musllinux x86_64..."
+            CIBW_PLATFORM=linux cibuildwheel --output-dir wheelhouse --arch x86_64 --musllinux
+          elif [[ "${{ matrix.target }}" == "manylinux_i686" ]]; then
+            echo "Building i686 wheels with cibuildwheel (arch x86)..."
+            CIBW_PLATFORM=linux CIBW_ARCHS=x86 cibuildwheel --output-dir wheelhouse
+          elif [[ "${{ matrix.target }}" == "musllinux_i686" ]]; then
+            echo "Fallback: building i686 wheels using pip wheel (may be limited) ..."
+            # fallback: try pip wheel on runner (may produce many of the pure wheels)
+            pip wheel -r requirements.txt -w wheelhouse || true
+            pip wheel spotdl -w wheelhouse || true
+          elif [[ "${{ matrix.target }}" == "manylinux_aarch64" ]]; then
+            echo "Running cibuildwheel for manylinux aarch64..."
+            CIBW_PLATFORM=linux cibuildwheel --output-dir wheelhouse --arch aarch64
+          else
+            echo "Unknown target; fallback using pip wheel"
+            pip wheel -r requirements.txt -w wheelhouse || true
+            pip wheel spotdl -w wheelhouse || true
+          fi
+
+          # Always attempt to build any missing dependency wheels with pip as extra attempt
+          pip wheel -r requirements.txt -w wheelhouse || true
+          pip wheel spotdl -w wheelhouse || true
+
+      - name: List wheelhouse
+        run: ls -lah wheelhouse || true
+
+      - name: Upload wheels as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotdl-wheels-${{ matrix.target }}-py${{ matrix.python-version }}
+          path: wheelhouse/*.whl
+
+  publish-release:
+    name: Publish wheels to GitHub Release
+    runs-on: ubuntu-latest
+    needs: build-wheels
+    steps:
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./dist
+
+      - name: Create GitHub release (if not exists)
+        id: create_rel
+        uses: softprops/first-interactive-release@v1
+        with:
+          tag: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload wheels to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*.whl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
