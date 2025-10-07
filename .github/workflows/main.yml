@@ -15,10 +15,10 @@ jobs:
       matrix:
         include:
           # 1. Objetivo Termux (Android) - AArch64 (64-bit ARM)
-          # Usamos una imagen Debian AArch64 oficial para el entorno de build.
+          # Usamos la imagen Debian multi-arquitectura estándar, forzando AArch64 con --platform.
           - target-arch: aarch64
             target-system: termux
-            docker-image: arm64v8/debian:bullseye # Imagen Debian AArch64 estable
+            docker-image: debian:bullseye # Imagen Debian multi-arquitectura estándar
             artifact-name: spotdl-pip-aarch64-packages
             
     steps:
@@ -73,6 +73,7 @@ jobs:
         
         # 3.2. Ejecutar el script dentro del contenedor AArch64
         docker run --rm \
+          --platform linux/arm64 \
           -v "$(pwd)":/src \
           -w /src \
           ${{ matrix.docker-image }} \
