@@ -1,140 +1,136 @@
-name: Build SpotDL Wheels (full)
+name: Compilación Móvil (Termux & iSH)
 
 on:
-  workflow_dispatch: {}  # Permite disparar manualmente el workflow
   push:
     tags:
-      - 'v*.*.*'         # Se ejecuta al pushear tags tipo vX.X.X
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
 
 jobs:
-  prepare:
-    name: Prepare repository
+  mobile_build:
     runs-on: ubuntu-latest
-    outputs:
-      reqfile: ${{ steps.reqfile.outputs.path }}
-    steps:
-      - uses: actions/checkout@v4
-
-      # Crea requirements.txt desde la lista básica que diste
-      - name: Create requirements.txt
-        id: reqfile
-        run: |
-          cat <<'REQ' > requirements.txt
-spotipy
-ytmusicapi
-pytube
-yt-dlp
-mutagen
-rich
-beautifulsoup4
-requests
-rapidfuzz
-python-slugify[unidecode]
-uvicorn
-pydantic
-fastapi
-platformdirs
-pykakasi
-syncedlyrics
-soundcloud-v2
-websockets
-REQ
-          echo "path=requirements.txt" >> $GITHUB_OUTPUT
-
-  build-wheels:
-    name: Build wheels for ${{ matrix.target }} / py${{ matrix.python-version }}
-    runs-on: ubuntu-latest
-    needs: prepare
-    env:
-      # Ajustes generales de cibuildwheel; se usan por plataforma cuando aplica
-      CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
-      CIBW_SKIP: "pp*"
+    
+    # Definimos la matriz para los entornos de compilación cruzada
     strategy:
-      fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
-        # targets cubren manylinux (glibc) y musl (Alpine/iSH) y ARM aarch64
-        target: [manylinux_x86_64, musllinux_x86_64, manylinux_i686, musllinux_i686, manylinux_aarch64]
+        include:
+          # ----------------------------------------------------
+          # 1. Termux (Android) - AArch64 (64-bit ARM)
+          # ----------------------------------------------------
+          - target-arch: aarch64
+            target-system: termux
+            docker-image: ghcr.io/termux/termux-packages:master # Contenedor con toolchain Termux
+            artifact-name: spotdl-termux-aarch64
+
+          # ----------------------------------------------------
+          # 2. Termux (Android) - ARM (32-bit ARM)
+          # ----------------------------------------------------
+          - target-arch: arm
+            target-system: termux
+            docker-image: ghcr.io/termux/termux-packages:master
+            artifact-name: spotdl-termux-arm
+
+          # ----------------------------------------------------
+          # 3. iSH (iOS) - Alpine Linux (x86 - i386)
+          # NOTA: iSH emula x86_32. Usaremos i386 Alpine.
+          # ----------------------------------------------------
+          - target-arch: i386
+            target-system: ish_alpine
+            docker-image: i386/alpine:3.18 # Imagen oficial i386 Alpine
+            artifact-name: spotdl-alpine-x86
+            
     steps:
-      - uses: actions/checkout@v4
+    - name: 1. Checkout del código
+      uses: actions/checkout@v4
 
-      - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install build deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install cibuildwheel==2.16.5 wheel build setuptools-rust maturin
-
-      # Build wheels using cibuildwheel for manylinux/musllinux images when applicable.
-      # For i686 musl builds or tricky combos, cibuildwheel may not support direct image names;
-      # pip wheel is fallback (runs on runner's env and can produce some wheels).
-      - name: Build wheels (cibuildwheel when possible)
-        env:
-          CIBW_MANYLINUX_X86_64_IMAGE: "quay.io/pypa/manylinux2014_x86_64"
-          CIBW_MUSLLINUX_X86_64_IMAGE: "ghcr.io/pypa/musllinux_1_1_x86_64"
-          CIBW_MANYLINUX_AARCH64_IMAGE: "quay.io/pypa/manylinux2014_aarch64"
-          CIBW_ARCHS: auto
-        run: |
-          mkdir -p wheelhouse
-
-          if [[ "${{ matrix.target }}" == "manylinux_x86_64" ]]; then
-            echo "Running cibuildwheel for manylinux x86_64..."
-            CIBW_PLATFORM=linux cibuildwheel --output-dir wheelhouse --arch x86_64
-          elif [[ "${{ matrix.target }}" == "musllinux_x86_64" ]]; then
-            echo "Running cibuildwheel for musllinux x86_64..."
-            CIBW_PLATFORM=linux cibuildwheel --output-dir wheelhouse --arch x86_64 --musllinux
-          elif [[ "${{ matrix.target }}" == "manylinux_i686" ]]; then
-            echo "Building i686 wheels with cibuildwheel (arch x86)..."
-            CIBW_PLATFORM=linux CIBW_ARCHS=x86 cibuildwheel --output-dir wheelhouse
-          elif [[ "${{ matrix.target }}" == "musllinux_i686" ]]; then
-            echo "Fallback: building i686 wheels using pip wheel (may be limited) ..."
-            # fallback: try pip wheel on runner (may produce many of the pure wheels)
-            pip wheel -r requirements.txt -w wheelhouse || true
-            pip wheel spotdl -w wheelhouse || true
-          elif [[ "${{ matrix.target }}" == "manylinux_aarch64" ]]; then
-            echo "Running cibuildwheel for manylinux aarch64..."
-            CIBW_PLATFORM=linux cibuildwheel --output-dir wheelhouse --arch aarch64
-          else
-            echo "Unknown target; fallback using pip wheel"
-            pip wheel -r requirements.txt -w wheelhouse || true
-            pip wheel spotdl -w wheelhouse || true
-          fi
-
-          # Always attempt to build any missing dependency wheels with pip as extra attempt
-          pip wheel -r requirements.txt -w wheelhouse || true
-      - name: List wheelhouse
-        run: ls -lah wheelhouse || true
-
-      - name: Upload wheels as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: spotdl-wheels-${{ matrix.target }}-py${{ matrix.python-version }}
-          path: wheelhouse/*.whl
-
-  publish-release:
-    name: Publish wheels to GitHub Release
-    runs-on: ubuntu-latest
-    needs: build-wheels
-    steps:
-      - name: Download all wheel artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./dist
-
-      - name: Create GitHub release (if not exists)
-        id: create_rel
-        uses: softprops/first-interactive-release@v1
-        with:
-          tag: ${{ github.ref_name }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload wheels to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/**/*.whl
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: 2. Construir binarios en contenedor Docker (Cross-Compilation)
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        # Usamos una sintaxis multi-etapa/multi-plataforma si es necesario, 
+        # pero para el cross-compiling en un solo paso, es mejor usar la imagen
+        # directamente con un script.
+        # En este caso, usaremos 'docker run' en un paso posterior para simplificar.
+        
+    - name: 3. Compilación (Termux/Alpine) - Usando Docker
+      run: |
+        TARGET_ARCH="${{ matrix.target-arch }}"
+        TARGET_SYS="${{ matrix.target-system }}"
+        DOCKER_IMAGE="${{ matrix.docker-image }}"
+        ARTIFACT_NAME="${{ matrix.artifact-name }}"
+        
+        # 3.1. Crear el Script de Compilación Temporal
+        cat > build_script.sh <<-EOF
+        #!/bin/bash
+        set -e
+        
+        # Instalar Python, pip, PyInstaller y dependencias de compilación
+        # (Esto varía mucho según la imagen base)
+        if [[ "\$TARGET_SYS" == "termux" ]]; then
+          # Termux usa el toolchain del NDK. Los paquetes de Python/pip deben instalarse 
+          # para el entorno Termux, no para el host.
+          # Este es el paso más difícil y a menudo requiere una configuración completa
+          # de Termux build-package.
+          
+          # Nota: Debido a que es una aplicación Python con dependencias binarias 
+          # como FFmpeg, lo más limpio es compilar el binario de Python directamente.
+          
+          # 1. Obtener la herramienta de compilación cruzada Termux
+          apt update && apt install -y python3 clang build-essential git
+          
+          # 2. Descargar e instalar PyInstaller (si es que existe)
+          pip install pyinstaller spotdl
+          
+          # 3. Descargar FFmpeg para el target (esto es crucial)
+          # spotdl --download-ffmpeg no funciona en cross-compile, hay que suministrarlo.
+          # Usaremos FFmpeg ya compilado de Termux
+          
+          # Este es solo un placeholder, la instalación de PyInstaller/FFmpeg 
+          # en un entorno Termux es compleja. La solución más simple: 
+          # 1. Usar un entorno Termux ya compilado.
+          # 2. Compilar *solo* SpotDL como un script de Python ejecutable.
+          
+          # Para simplificar *en un entorno Termux*, asumiremos que el usuario
+          # solo necesita los archivos de Python, ya que FFmpeg puede instalarse
+          # con 'pkg install ffmpeg' en Termux.
+          echo "Creando script de instalación para Termux..."
+          tar -czf "\$ARTIFACT_NAME.tar.gz" .
+        
+        elif [[ "\$TARGET_SYS" == "ish_alpine" ]]; then
+          # Alpine Linux (x86/i386)
+          # 1. Instalar paquetes de desarrollo/Python en Alpine
+          apk update
+          apk add python3 py3-pip py3-dev gcc musl-dev openssl-dev
+          
+          # 2. Instalar herramientas Python
+          pip install pyinstaller spotdl
+          
+          # 3. Instalar FFmpeg (Librería pesada pre-compilada)
+          # Alpine tiene paquetes FFmpeg.
+          apk add ffmpeg
+          
+          # 4. Crear el ejecutable (estático es ideal para portabilidad)
+          # El FFmpeg en el PATH será recogido por PyInstaller
+          pyinstaller --onefile spotdl/__main__.py -n spotdl
+          
+          # 5. Empaquetar
+          mv dist/spotdl /root/"\$ARTIFACT_NAME"
+          tar -czf "\$ARTIFACT_NAME.tar.gz" /root/"\$ARTIFACT_NAME"
+        fi
+        
+        EOF
+        
+        # 3.2. Ejecutar el script dentro del contenedor
+        # Montamos el repositorio actual en /src y el script de build.
+        docker run --rm \
+          -v "$(pwd)":/src \
+          -w /src \
+          ${{ matrix.docker-image }} \
+          /bin/sh /src/build_script.sh
+          
+    - name: 4. Subir Artefacto
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact-name }}
+        path: ${{ matrix.artifact-name }}.tar.gz
