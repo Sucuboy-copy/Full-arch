@@ -14,122 +14,86 @@ jobs:
     strategy:
       matrix:
         include:
-          # ----------------------------------------------------
           # 1. Termux (Android) - AArch64 (64-bit ARM)
-          # ----------------------------------------------------
           - target-arch: aarch64
             target-system: termux
-            docker-image: ghcr.io/termux/termux-packages:master # Contenedor con toolchain Termux
+            docker-image: ghcr.io/termux/termux-packages:master
             artifact-name: spotdl-termux-aarch64
 
-          # ----------------------------------------------------
           # 2. Termux (Android) - ARM (32-bit ARM)
-          # ----------------------------------------------------
           - target-arch: arm
             target-system: termux
             docker-image: ghcr.io/termux/termux-packages:master
             artifact-name: spotdl-termux-arm
 
-          # ----------------------------------------------------
           # 3. iSH (iOS) - Alpine Linux (x86 - i386)
-          # NOTA: iSH emula x86_32. Usaremos i386 Alpine.
-          # ----------------------------------------------------
+          # NOTA: iSH emula x86_32 (i386).
           - target-arch: i386
             target-system: ish_alpine
-            docker-image: i386/alpine:3.18 # Imagen oficial i386 Alpine
+            docker-image: i386/alpine:3.18
             artifact-name: spotdl-alpine-x86
             
     steps:
     - name: 1. Checkout del código
       uses: actions/checkout@v4
 
-    - name: 2. Construir binarios en contenedor Docker (Cross-Compilation)
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        push: false
-        # Usamos una sintaxis multi-etapa/multi-plataforma si es necesario, 
-        # pero para el cross-compiling en un solo paso, es mejor usar la imagen
-        # directamente con un script.
-        # En este caso, usaremos 'docker run' en un paso posterior para simplificar.
-        
-    - name: 3. Compilación (Termux/Alpine) - Usando Docker
+    # ¡El paso 2 original fue ELIMINADO!
+
+    - name: 2. Compilación (Termux/Alpine) - Usando Docker
+      # Este paso ahora es el 2 y ejecuta la lógica de compilación cruzada
       run: |
         TARGET_ARCH="${{ matrix.target-arch }}"
         TARGET_SYS="${{ matrix.target-system }}"
         DOCKER_IMAGE="${{ matrix.docker-image }}"
         ARTIFACT_NAME="${{ matrix.artifact-name }}"
         
-        # 3.1. Crear el Script de Compilación Temporal
+        echo "Iniciando compilación para ARQUITECTURA: \$TARGET_ARCH en SISTEMA: \$TARGET_SYS"
+        
+        # 2.1. Crear el Script de Compilación Temporal
+        # Este script se ejecuta dentro del contenedor Docker específico.
         cat > build_script.sh <<-EOF
         #!/bin/bash
         set -e
         
-        # Instalar Python, pip, PyInstaller y dependencias de compilación
-        # (Esto varía mucho según la imagen base)
+        # El directorio actual dentro del contenedor es /src
+        
         if [[ "\$TARGET_SYS" == "termux" ]]; then
-          # Termux usa el toolchain del NDK. Los paquetes de Python/pip deben instalarse 
-          # para el entorno Termux, no para el host.
-          # Este es el paso más difícil y a menudo requiere una configuración completa
-          # de Termux build-package.
-          
-          # Nota: Debido a que es una aplicación Python con dependencias binarias 
-          # como FFmpeg, lo más limpio es compilar el binario de Python directamente.
-          
-          # 1. Obtener la herramienta de compilación cruzada Termux
-          apt update && apt install -y python3 clang build-essential git
-          
-          # 2. Descargar e instalar PyInstaller (si es que existe)
-          pip install pyinstaller spotdl
-          
-          # 3. Descargar FFmpeg para el target (esto es crucial)
-          # spotdl --download-ffmpeg no funciona en cross-compile, hay que suministrarlo.
-          # Usaremos FFmpeg ya compilado de Termux
-          
-          # Este es solo un placeholder, la instalación de PyInstaller/FFmpeg 
-          # en un entorno Termux es compleja. La solución más simple: 
-          # 1. Usar un entorno Termux ya compilado.
-          # 2. Compilar *solo* SpotDL como un script de Python ejecutable.
-          
-          # Para simplificar *en un entorno Termux*, asumiremos que el usuario
-          # solo necesita los archivos de Python, ya que FFmpeg puede instalarse
-          # con 'pkg install ffmpeg' en Termux.
-          echo "Creando script de instalación para Termux..."
+          echo "Ejecutando script de empaquetado Termux (simplicidad: solo archivos Python)"
+          # NOTA: Para binarios reales, se recomienda usar el sistema de packaging de Termux.
+          # Aquí, solo empaquetamos el código fuente de Python.
+          apk update && apk add tar gzip # Asegurar que tar y gzip estén disponibles
           tar -czf "\$ARTIFACT_NAME.tar.gz" .
         
         elif [[ "\$TARGET_SYS" == "ish_alpine" ]]; then
-          # Alpine Linux (x86/i386)
+          echo "Ejecutando script de compilación Alpine i386 (x86)"
+          
           # 1. Instalar paquetes de desarrollo/Python en Alpine
           apk update
-          apk add python3 py3-pip py3-dev gcc musl-dev openssl-dev
+          apk add python3 py3-pip py3-dev gcc musl-dev openssl-dev # Dependencias básicas
+          apk add ffmpeg # Instalar FFmpeg precompilado para i386
           
           # 2. Instalar herramientas Python
           pip install pyinstaller spotdl
           
-          # 3. Instalar FFmpeg (Librería pesada pre-compilada)
-          # Alpine tiene paquetes FFmpeg.
-          apk add ffmpeg
-          
-          # 4. Crear el ejecutable (estático es ideal para portabilidad)
-          # El FFmpeg en el PATH será recogido por PyInstaller
+          # 3. Crear el ejecutable con PyInstaller
+          # PyInstaller creará un binario estático que incluye las dependencias y el binario FFmpeg
           pyinstaller --onefile spotdl/__main__.py -n spotdl
           
-          # 5. Empaquetar
-          mv dist/spotdl /root/"\$ARTIFACT_NAME"
-          tar -czf "\$ARTIFACT_NAME.tar.gz" /root/"\$ARTIFACT_NAME"
+          # 4. Empaquetar
+          mv dist/spotdl "\$ARTIFACT_NAME"
+          tar -czf "\$ARTIFACT_NAME.tar.gz" "\$ARTIFACT_NAME"
         fi
         
         EOF
         
-        # 3.2. Ejecutar el script dentro del contenedor
-        # Montamos el repositorio actual en /src y el script de build.
+        # 2.2. Ejecutar el script dentro del contenedor
         docker run --rm \
           -v "$(pwd)":/src \
           -w /src \
           ${{ matrix.docker-image }} \
           /bin/sh /src/build_script.sh
           
-    - name: 4. Subir Artefacto
+    - name: 3. Subir Artefacto
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact-name }}
