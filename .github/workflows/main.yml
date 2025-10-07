@@ -1,4 +1,4 @@
-name: Compilación Móvil (Termux & iSH)
+name: Compilación Termux (Paquete PIP AArch64)
 
 on:
   push:
@@ -10,92 +10,77 @@ jobs:
   mobile_build:
     runs-on: ubuntu-latest
     
-    # Definimos la matriz para los entornos de compilación cruzada
+    # Definimos la matriz para compilar solo AArch64
     strategy:
       matrix:
         include:
-          # 1. Termux (Android) - AArch64 (64-bit ARM)
-          # *** IMAGEN CAMBIADA a ubuntu:latest para evitar el error 'denied' en ghcr.io ***
+          # 1. Objetivo Termux (Android) - AArch64 (64-bit ARM)
+          # Usamos una imagen Debian AArch64 oficial para el entorno de build.
           - target-arch: aarch64
             target-system: termux
-            docker-image: ubuntu:latest # Imagen accesible y estable
-            artifact-name: spotdl-termux-aarch64
-
-          # 2. Termux (Android) - ARM (32-bit ARM)
-          # *** IMAGEN CAMBIADA a ubuntu:latest para evitar el error 'denied' en ghcr.io ***
-          - target-arch: arm
-            target-system: termux
-            docker-image: ubuntu:latest # Imagen accesible y estable
-            artifact-name: spotdl-termux-arm
-
-          # 3. iSH (iOS) - Alpine Linux (x86 - i386)
-          # Se mantiene 'i386/alpine:3.18' (imagen oficial)
-          - target-arch: i386
-            target-system: ish_alpine
-            docker-image: i386/alpine:3.18
-            artifact-name: spotdl-alpine-x86
+            docker-image: arm64v8/debian:bullseye # Imagen Debian AArch64 estable
+            artifact-name: spotdl-pip-aarch64-packages
             
     steps:
     - name: 1. Checkout del código
       uses: actions/checkout@v4
 
-    - name: 2. Compilación (Termux/Alpine) - Usando Docker
-      # Este paso ahora es el 2 y ejecuta la lógica de compilación cruzada
+    - name: 2. Configurar QEMU para Emulación AArch64
+      # Esto permite que el runner de Ubuntu (x86_64) ejecute contenedores AArch64
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: all
+
+    - name: 3. Generación del Paquete PIP (AArch64) - Usando Docker
+      # Ejecuta la lógica dentro del contenedor AArch64 emulado para crear el sdist/wheel
       run: |
         TARGET_ARCH="${{ matrix.target-arch }}"
         TARGET_SYS="${{ matrix.target-system }}"
         DOCKER_IMAGE="${{ matrix.docker-image }}"
         ARTIFACT_NAME="${{ matrix.artifact-name }}"
         
-        echo "Iniciando compilación para ARQUITECTURA: \$TARGET_ARCH en SISTEMA: \$TARGET_SYS"
+        echo "Iniciando generación de paquetes PIP para ARQUITECTURA: \$TARGET_ARCH"
         
-        # 2.1. Crear el Script de Compilación Temporal
+        # 3.1. Crear el Script de Build Temporal
         cat > build_script.sh <<-EOF
         #!/bin/bash
         set -e
         
-        # El directorio actual dentro del contenedor es /src
+        echo "Preparando entorno AArch64 para construir paquete instalable por pip..."
         
-        if [[ "\$TARGET_SYS" == "termux" ]]; then
-          echo "Ejecutando script de empaquetado Termux (simplicidad: solo archivos Python)"
-          
-          # Instalamos herramientas usando APT (para el contenedor Ubuntu)
-          export DEBIAN_FRONTEND=noninteractive
-          apt update && apt install -y tar gzip # Instalar herramientas
-          
-          # Empaquetamos el código fuente.
-          tar -czf "\$ARTIFACT_NAME.tar.gz" .
+        # 1. Configurar y actualizar APT (dentro del contenedor Debian AArch64)
+        export DEBIAN_FRONTEND=noninteractive
+        apt update -y 
         
-        elif [[ "\$TARGET_SYS" == "ish_alpine" ]]; then
-          echo "Ejecutando script de compilación Alpine i386 (x86)"
-          
-          # 1. Instalar paquetes de desarrollo/Python en Alpine
-          apk update
-          apk add python3 py3-pip py3-dev gcc musl-dev openssl-dev
-          apk add ffmpeg # Instalar FFmpeg precompilado para i386
-          
-          # 2. Instalar herramientas Python
-          pip install pyinstaller spotdl
-          
-          # 3. Crear el ejecutable con PyInstaller
-          pyinstaller --onefile spotdl/__main__.py -n spotdl
-          
-          # 4. Empaquetar
-          mv dist/spotdl "\$ARTIFACT_NAME"
-          tar -czf "\$ARTIFACT_NAME.tar.gz" "\$ARTIFACT_NAME"
-        fi
+        # 2. Instalar herramientas de compilación de Python (build, setuptools, wheel)
+        echo "Instalando Python y herramientas de packaging..."
+        apt install -y python3 python3-pip python3-dev build-essential tar gzip
+        # Instalamos las herramientas que generan sdist y wheel
+        pip3 install build setuptools wheel
+        
+        # 3. Generar el paquete (sdist y wheel)
+        # Esto genera los archivos .tar.gz (sdist) y .whl (wheel) en el directorio dist/
+        echo "Generando sdist y wheel AArch64..."
+        python3 -m build --wheel --sdist
+        
+        # 4. Empaquetar el directorio dist/
+        # El directorio dist/ contiene todos los archivos .whl y .tar.gz generados
+        echo "Empaquetando el directorio dist/..."
+        # El directorio dist/ se encuentra en /src/dist
+        tar -czf "\$ARTIFACT_NAME.tar.gz" dist
         
         EOF
         
-        # 2.2. Ejecutar el script dentro del contenedor
+        # 3.2. Ejecutar el script dentro del contenedor AArch64
         docker run --rm \
           -v "$(pwd)":/src \
           -w /src \
           ${{ matrix.docker-image }} \
           /bin/bash /src/build_script.sh
           
-    - name: 3. Subir Artefacto
+    - name: 4. Subir Artefacto
       uses: actions/upload-artifact@v4
       with:
+        # El artefacto ahora contiene el directorio dist/ completo
         name: ${{ matrix.artifact-name }}
         path: ${{ matrix.artifact-name }}.tar.gz
