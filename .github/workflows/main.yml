@@ -15,19 +15,21 @@ jobs:
       matrix:
         include:
           # 1. Termux (Android) - AArch64 (64-bit ARM)
+          # *** IMAGEN CAMBIADA a ubuntu:latest para evitar el error 'denied' en ghcr.io ***
           - target-arch: aarch64
             target-system: termux
-            docker-image: ghcr.io/termux/termux-packages:master
+            docker-image: ubuntu:latest # Imagen accesible y estable
             artifact-name: spotdl-termux-aarch64
 
           # 2. Termux (Android) - ARM (32-bit ARM)
+          # *** IMAGEN CAMBIADA a ubuntu:latest para evitar el error 'denied' en ghcr.io ***
           - target-arch: arm
             target-system: termux
-            docker-image: ghcr.io/termux/termux-packages:master
+            docker-image: ubuntu:latest # Imagen accesible y estable
             artifact-name: spotdl-termux-arm
 
           # 3. iSH (iOS) - Alpine Linux (x86 - i386)
-          # NOTA: iSH emula x86_32 (i386).
+          # Se mantiene 'i386/alpine:3.18' (imagen oficial)
           - target-arch: i386
             target-system: ish_alpine
             docker-image: i386/alpine:3.18
@@ -36,8 +38,6 @@ jobs:
     steps:
     - name: 1. Checkout del código
       uses: actions/checkout@v4
-
-    # ¡El paso 2 original fue ELIMINADO!
 
     - name: 2. Compilación (Termux/Alpine) - Usando Docker
       # Este paso ahora es el 2 y ejecuta la lógica de compilación cruzada
@@ -50,7 +50,6 @@ jobs:
         echo "Iniciando compilación para ARQUITECTURA: \$TARGET_ARCH en SISTEMA: \$TARGET_SYS"
         
         # 2.1. Crear el Script de Compilación Temporal
-        # Este script se ejecuta dentro del contenedor Docker específico.
         cat > build_script.sh <<-EOF
         #!/bin/bash
         set -e
@@ -59,9 +58,12 @@ jobs:
         
         if [[ "\$TARGET_SYS" == "termux" ]]; then
           echo "Ejecutando script de empaquetado Termux (simplicidad: solo archivos Python)"
-          # NOTA: Para binarios reales, se recomienda usar el sistema de packaging de Termux.
-          # Aquí, solo empaquetamos el código fuente de Python.
-          apk update && apk add tar gzip # Asegurar que tar y gzip estén disponibles
+          
+          # Instalamos herramientas usando APT (para el contenedor Ubuntu)
+          export DEBIAN_FRONTEND=noninteractive
+          apt update && apt install -y tar gzip # Instalar herramientas
+          
+          # Empaquetamos el código fuente.
           tar -czf "\$ARTIFACT_NAME.tar.gz" .
         
         elif [[ "\$TARGET_SYS" == "ish_alpine" ]]; then
@@ -69,14 +71,13 @@ jobs:
           
           # 1. Instalar paquetes de desarrollo/Python en Alpine
           apk update
-          apk add python3 py3-pip py3-dev gcc musl-dev openssl-dev # Dependencias básicas
+          apk add python3 py3-pip py3-dev gcc musl-dev openssl-dev
           apk add ffmpeg # Instalar FFmpeg precompilado para i386
           
           # 2. Instalar herramientas Python
           pip install pyinstaller spotdl
           
           # 3. Crear el ejecutable con PyInstaller
-          # PyInstaller creará un binario estático que incluye las dependencias y el binario FFmpeg
           pyinstaller --onefile spotdl/__main__.py -n spotdl
           
           # 4. Empaquetar
@@ -91,7 +92,7 @@ jobs:
           -v "$(pwd)":/src \
           -w /src \
           ${{ matrix.docker-image }} \
-          /bin/sh /src/build_script.sh
+          /bin/bash /src/build_script.sh
           
     - name: 3. Subir Artefacto
       uses: actions/upload-artifact@v4
